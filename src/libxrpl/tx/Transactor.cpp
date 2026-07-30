@@ -1378,7 +1378,14 @@ Transactor::reset(XRPAmount fee)
 FeePayer
 Transactor::getFeePayer(ReadView const& view, STTx const& tx)
 {
-    if (tx.isFieldPresent(sfSponsor) && isFeeSponsored(tx))
+    // DEMO ONLY -- not for merge. When both Sponsor and Permission Delegation
+    // apply, this amendment changes the fee-payer precedence to the delegate.
+    bool const delegateTakesPriority =
+        view.rules().enabled(featureDelegateFeePayerPriority) &&
+        tx.isFieldPresent(sfDelegate);
+
+    if (!delegateTakesPriority && tx.isFieldPresent(sfSponsor) &&
+        isFeeSponsored(tx))
     {
         auto const sponsorID = tx.getAccountID(sfSponsor);
         auto const sponseeID = tx.getInitiator();
