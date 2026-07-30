@@ -206,9 +206,9 @@ NFTokenCountTracking::finalize(
     ReadView const& view,
     beast::Journal const& j) const
 {
-    // Only transactions holding the privilege may move these counts; for every
-    // other transaction type an observed change is a bug, not a permitted edit.
-    if (!hasPrivilege(tx, ChangeNftCounts))
+    if (!hasPrivilege(
+            tx,
+            ChangeNftCounts))  // Others must leave both counts unchanged.
     {
         if (beforeMintedTotal_ != afterMintedTotal_)
         {
