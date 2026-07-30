@@ -1408,10 +1408,13 @@ Transactor::getFeePayer(ReadView const& view, STTx const& tx)
             .type = FeePayerType::SponsorCoSigned};
     }
 
+    // A fee-sponsored transaction has already returned above, so a transaction
+    // carrying both sfSponsor and sfDelegate is attributed to the sponsor and
+    // never reaches FeePayerType::Delegate.
     AccountID const payerID = tx.getInitiator();
     auto const payerAccountKeylet = keylet::account(payerID);
-    auto const payerType =
-        tx.isFieldPresent(sfDelegate) ? FeePayerType::Delegate : FeePayerType::Account;
+    bool const isDelegated = tx.isFieldPresent(sfDelegate);
+    auto const payerType = isDelegated ? FeePayerType::Delegate : FeePayerType::Account;
 
     return FeePayer{
         .id = payerID, .keylet = payerAccountKeylet, .balanceField = sfBalance, .type = payerType};
