@@ -102,6 +102,41 @@ def _code_list(names: list[str]) -> str:
     return ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
 
 
+def _plain_list(parts: list[str]) -> str:
+    if len(parts) < 2:
+        return "".join(parts)
+    if len(parts) == 2:
+        return " and ".join(parts)
+    return ", ".join(parts[:-1]) + f", and {parts[-1]}"
+
+
+def _role_description(item: dict, index: int) -> str:
+    if "wrapper" in item["vias"][index]:
+        return "wraps transactions through it"
+    role = item["roles"][index]
+    return ROLE_GLOSS.get(role, role)
+
+
+def _interaction_key(item: dict) -> tuple:
+    """Identity of a feature relationship independent of shared location."""
+    endpoints = tuple(sorted(zip(item["features"], item["roles"], strict=True)))
+    return (item["kind"], endpoints)
+
+
+def _recurring_spots(report: dict) -> dict[tuple, list[str]]:
+    """Feature relationships selected at more than one shared location."""
+    spots: dict[tuple, list[str]] = {}
+    for group in report["groups"]:
+        if group["resource_kind"] == "invariant":
+            continue
+        for item in group["interactions"]:
+            key = _interaction_key(item)
+            names = spots.setdefault(key, [])
+            if group["resource"] not in names:
+                names.append(group["resource"])
+    return {key: names for key, names in spots.items() if len(names) > 1}
+
+
 def _header(report: dict) -> list[str]:
     summary = report["summary"]
     lines = [
@@ -119,6 +154,7 @@ def _header(report: dict) -> list[str]:
     counts: dict[str, int] = {}
     display_items = 0
     has_authorization_check = False
+    seen: set[tuple] = set()
     for group in report["groups"]:
         if group["resource_kind"] == "invariant":
             has_authorization_check = True
@@ -128,6 +164,10 @@ def _header(report: dict) -> list[str]:
                 display_items += 1
             continue
         for item in group["interactions"]:
+            key = _interaction_key(item)
+            if key in seen:
+                continue
+            seen.add(key)
             tier = item["tier"]
             counts[tier] = counts.get(tier, 0) + 1
             display_items += 1
@@ -168,18 +208,34 @@ def _header(report: dict) -> list[str]:
             # amendment its declaration never mentions (pr_map.py). Claiming the
             # first when it was the second is an overclaim a reader catches by
             # opening the diff, so say what is actually known.
-            f"⚠️ **The code you touched reads {levers}, which is not part of "
-            f"what it declares.** Either this diff started branching on it, or "
-            f"the code was already consulting an amendment nothing declares. "
-            f"Either way, this is about *which* features meet here, not just "
-            f"how they behave once they do.",
+            f"⚠️ **The changed code contains {levers}, but that dependency is "
+            f"not recorded for the code this diff was mapped to.** It may be "
+            f"new in this diff, or it may have already existed without being "
+            f"declared. Either way, this is about *which* features meet here, "
+            f"not just how they behave once they do.",
         ]
     return lines
 
 
-def _group_section(group: dict, show_omitted: bool) -> list[str]:
+def _group_section(
+    group: dict,
+    show_omitted: bool,
+    recurring: dict[tuple, list[str]],
+    rendered: set[tuple],
+) -> list[str]:
     hit = MATCH_GLOSS[group["resource_match"]]
     kind = RESOURCE_GLOSS.get(group["resource_kind"], group["resource_kind"])
+    visible: list[dict] = []
+    if group["resource_kind"] != "invariant":
+        for item in group["interactions"]:
+            key = _interaction_key(item)
+            if key in rendered:
+                continue
+            rendered.add(key)
+            visible.append(item)
+        if not visible and not group["consumer_cohort"]:
+            return []
+
     lines = [
         "",
         f"### `{group['resource']}` — {kind} ({hit})",
@@ -216,13 +272,23 @@ def _group_section(group: dict, show_omitted: bool) -> list[str]:
         ]
     cohort = group["consumer_cohort"]
     if cohort:
+        wrappers = set(cohort["wrappers"])
+        changing_side = _plain_list(
+            [
+                (
+                    f"`{name}` (wraps transactions through it)"
+                    if name in wrappers
+                    else f"`{name}` (changes it)"
+                )
+                for name in cohort["mediators"]
+            ]
+        )
         lines += [
             "",
             f"This decision is part of the common transaction path: "
             f"**{_n(len(cohort['consumers']), 'transaction type')}** "
             f"{'passes' if len(cohort['consumers']) == 1 else 'pass'} through it. "
-            f"The features that change the decision are "
-            f"{_code_list(cohort['mediators'])}. Their "
+            f"The other side is {changing_side}. Their "
             f"{_n(cohort['pair_count'], 'feature-by-transaction combination')} "
             f"{'is' if cohort['pair_count'] == 1 else 'are'} summarized here "
             f"because every transaction type has the same "
@@ -240,15 +306,24 @@ def _group_section(group: dict, show_omitted: bool) -> list[str]:
         "| features | how they meet | why it is here | where |",
         "| --- | --- | --- | --- |",
     ]
-    for item in group["interactions"]:
+    for item in visible:
         a, b = item["features"]
-        roles = dict(zip(item["features"], item["roles"], strict=True))
         pair = (
-            f"`{a}` ({ROLE_GLOSS.get(roles[a], roles[a])}) × "
-            f"`{b}` ({ROLE_GLOSS.get(roles[b], roles[b])})"
+            f"`{a}` ({_role_description(item, 0)}) × "
+            f"`{b}` ({_role_description(item, 1)})"
         )
         how = f"{TIER_LABEL[item['tier']]}<br>{KIND_GLOSS.get(item['kind'], item['kind'])}"
-        why = "<br>".join(item["why"])
+        why_parts = list(item["why"])
+        other_spots = [
+            spot
+            for spot in recurring.get(_interaction_key(item), ())
+            if spot != group["resource"]
+        ]
+        if other_spots:
+            why_parts.append(
+                f"Same pair also reaches {_code_list(other_spots)}"
+            )
+        why = "<br>".join(why_parts)
         lines.append(
             f"| {pair} | {how} | {why} | {_short_evidence(item['evidence'])} |"
         )
@@ -266,9 +341,16 @@ def render(report: dict) -> str:
     # With one group its per-group count and the overall count are the same
     # number, and printing both reads like two different omissions.
     per_group = len(report["groups"]) > 1
+    recurring = _recurring_spots(report)
+    rendered: set[tuple] = set()
     lines = _header(report)
     for group in report["groups"]:
-        lines += _group_section(group, show_omitted=per_group)
+        lines += _group_section(
+            group,
+            show_omitted=per_group,
+            recurring=recurring,
+            rendered=rendered,
+        )
 
     if summary["truncated"]:
         extra = (
@@ -279,10 +361,10 @@ def render(report: dict) -> str:
         lines += [
             "",
             f"_{summary['truncated']} of {_n(summary['candidates'], 'pair')} are "
-            f"not shown, lowest-ranked first{extra}. Code this widely shared pairs "
+            f"not shown, lowest-ranked first{extra}. Widely shared code pairs "
             f"with nearly every transaction type, so most of that tail is "
-            f"combinations rather than findings — what is above is the part with "
-            f"something behind it._",
+            f"combinations rather than findings — the rows above are the "
+            f"highest-ranked relationships._",
         ]
     if summary["dropped_low_signal"]:
         lines += [
