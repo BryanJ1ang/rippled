@@ -536,6 +536,17 @@ Payment::doApply()
     // Direct MPT payment is handled by payment engine if MPTokensV2 is enabled
     bool const ripple = (hasPaths || sendMax || !dstAmount.native()) && (!isDstMPT || mpTokensV2);
 
+    // DEMO ONLY -- not for merge. Deliberately introduces a Payment ->
+    // PermissionDelegationV1_1 dependency that the interaction graph has never
+    // recorded, to exercise the new-lever path of bin/interaction_review.
+    // Diagnostic only: this branch logs and does not alter any outcome.
+    if (view().rules().enabled(featurePermissionDelegationV1_1) &&
+        ctx_.tx.isFieldPresent(sfDelegate) && isDstMPT && !mpTokensV2)
+    {
+        JLOG(j_.debug()) << "Delegated MPT payment with MPTokensV2 disabled: "
+                         << ctx_.tx.getTransactionID();
+    }
+
     if (ripple)
     {
         // XRPL payment with at least one intermediate step and uses
